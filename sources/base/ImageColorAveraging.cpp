@@ -320,29 +320,45 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
             else if (maximum == g) hue = 60.0 * ((b - r) / static_cast<double>(delta) + 2.0);
             else hue = 60.0 * ((r - g) / static_cast<double>(delta) + 4.0);
             if (hue < 0.0) hue += 360.0;
-            const int bin = std::clamp(static_cast<int>(hue * kBins / 360.0), 0, kBins - 1);
             const double nx = ((static_cast<double>(x - x0) + 0.5) * scaleX - 0.5) * 2.0;
             const double ny = ((static_cast<double>(y - y0) + 0.5) * scaleY - 0.5) * 2.0;
             const bool atBorder = std::abs(nx) > 0.70 || std::abs(ny) > 0.70;
             const double centerGaussian = std::exp(-3.5 * (nx * nx + ny * ny));
             const double centralWeight = 1.0 + 4.0 * centerGaussian;
 
-            auto& c = clusters[bin];
-            c.pixels += 1.0;
-            c.centralWeight += centralWeight;
-            c.borderPixels += atBorder ? 1.0 : 0.0;
-            c.red += r; c.green += g; c.blue += b;
-            if (atBorder) backgroundVotes[bin] += 1.0;
-            if (!adaptive) {
-                const double brightness = std::sqrt(static_cast<double>(maximum) / 255.0);
-                const double colorfulness = 0.55 + 0.45 * std::sqrt(saturation);
-                // Mild center preference; this is not the center-biased Adaptive mode.
-                const double position = 0.85 + 0.45 * centerGaussian;
-                const double weight = brightness * colorfulness * position;
-                c.weightedVotes += weight;
-                c.weightedRed += r * weight;
-                c.weightedGreen += g * weight;
-                c.weightedBlue += b * weight;
+            const auto addHueSample = [&](int bin, double fraction) {
+                auto& c = clusters[bin];
+                c.pixels += fraction;
+                c.centralWeight += centralWeight * fraction;
+                c.borderPixels += atBorder ? fraction : 0.0;
+                c.red += r * fraction;
+                c.green += g * fraction;
+                c.blue += b * fraction;
+                if (atBorder) backgroundVotes[bin] += fraction;
+                if (!adaptive) {
+                    const double brightness = std::sqrt(static_cast<double>(maximum) / 255.0);
+                    const double colorfulness = 0.55 + 0.45 * std::sqrt(saturation);
+                    const double position = 0.85 + 0.45 * centerGaussian;
+                    const double weight = brightness * colorfulness * position * fraction;
+                    c.weightedVotes += weight;
+                    c.weightedRed += r * weight;
+                    c.weightedGreen += g * weight;
+                    c.weightedBlue += b * weight;
+                }
+            };
+
+            if (adaptive) {
+                // Preserve Adaptive Accent's original discrete histogram.
+                addHueSample(std::clamp(static_cast<int>(hue * kBins / 360.0), 0, kBins - 1), 1.0);
+            } else {
+                // Circular bilinear histogram: avoid 15-degree hue-boundary jumps.
+                // Bin centers are at 7.5, 22.5, ..., 352.5 degrees.
+                const double position = hue * kBins / 360.0 - 0.5;
+                const int lower = static_cast<int>(std::floor(position));
+                const double upperFraction = position - lower;
+                const int first = (lower + kBins) % kBins;
+                addHueSample(first, 1.0 - upperFraction);
+                addHueSample((first + 1) % kBins, upperFraction);
             }
         }
     }
@@ -384,20 +400,30 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
     }
 
     if (!adaptive) {
-        // EMA over the *candidate scores*, before winner selection.
-        // This removes rapid winner flips that LED smoothing cannot prevent.
+        // Normalize before applying temporal smoothing: the hue distribution
+        // must remain comparable when the whole scene gets darker/brighter.
+        double totalScore = 0.0;
+        for (double score : scores) totalScore += score;
+        if (totalScore > 0.0)
+            for (double& score : scores) score /= totalScore;
+
+        // Smooth candidate scores, not the output RGB (HyperHDR does that).
+        // Strong distribution shifts are likely scene cuts, so react faster.
         const auto timePoint = std::chrono::steady_clock::now().time_since_epoch();
         const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(timePoint).count();
         double alpha = 1.0;
         if (_lastDominantMs > 0 && nowMs >= _lastDominantMs) {
             const double elapsed = std::clamp(static_cast<double>(nowMs - _lastDominantMs), 1.0, 2000.0);
             alpha = 1.0 - std::exp(-elapsed / 140.0);
+            double distributionShift = 0.0;
+            for (int i = 0; i < kBins; ++i)
+                distributionShift += std::abs(scores[i] - _dominantScores[i]);
+            // Total variation > 0.65: the dominant colors changed abruptly.
+            if (distributionShift > 1.30) alpha = std::max(alpha, 0.85);
         }
         _lastDominantMs = nowMs;
         for (int i = 0; i < kBins; ++i) {
             _dominantScores[i] += alpha * (scores[i] - _dominantScores[i]);
-            // Don't hold a hue that disappeared completely from the current frame.
-            if (clusters[i].pixels == 0.0) _dominantScores[i] = 0.0;
             scores[i] = _dominantScores[i];
         }
     } else {
@@ -405,16 +431,24 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
         _lastDominantMs = 0;
     }
 
-    int winner = 0;
-    for (int i = 1; i < kBins; ++i)
-        if (scores[i] > scores[winner]) winner = i;
+    // A smoothed peak can outlive its actual pixels. Never select a hue
+    // that is absent from the current image just because it won previously.
+    int winner = -1;
+    for (int i = 0; i < kBins; ++i) {
+        if (clusters[i].pixels <= 1e-9) continue;
+        if (winner < 0 || scores[i] > scores[winner]) winner = i;
+    }
+    if (winner < 0) {
+        ledColors.assign(_colorsMap.size(), calcUnicolorForLeds(image));
+        return;
+    }
 
     const auto distanceBins = [&](int a, int b) {
         const int d = std::abs(a - b);
         return std::min(d, kBins - d);
     };
 
-    if (_lastHueBin >= 0 && _lastHueBin != winner && clusters[_lastHueBin].pixels > 0.0) {
+    if (_lastHueBin >= 0 && _lastHueBin != winner && clusters[_lastHueBin].pixels > 1e-9) {
         // Adjacent bin changes are the same broad color family, not a scene cut.
         if (!adaptive && distanceBins(_lastHueBin, winner) <= 1) {
             _pendingHueBin = -1;
