@@ -1,4 +1,8 @@
 {
+  "edt_conf_enum_unicolor_dominant": "Одноцветный: доминирующий оттенок (экспериментальный)",
+  "edt_conf_enum_unicolor_adaptive": "Одноцветный: цветовой акцент с учётом фона и центра (экспериментальный)",
+  "remote_maptype_label_unicolor_dominant": "Доминантный",
+  "remote_maptype_label_unicolor_adaptive": "Адаптивный акцент",
   "general_btn_on": "Включено",
   "InfoDialog_access_text": "В зависимости от уровня настроек вы можете настроить больше параметров или получить доступ к дополнительным функциям. Рекомендуется уровень \"По умолчанию\".",
   "InfoDialog_access_title": "Уровень настроек",

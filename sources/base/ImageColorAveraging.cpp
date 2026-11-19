@@ -30,6 +30,9 @@
 #include <infinite-color-engine/InfiniteProcessing.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <chrono>
 #include <ranges>
 #include <iterator>
 
@@ -183,6 +186,8 @@ void ImageColorAveraging::process(std::vector<float3>& ledColors, const Image<Co
 	switch (_mappingType)
 	{
 		case 1: getUnicolorForLeds(ledColors, image); break;
+		case 2: getUnicolorExperimental(ledColors, image, false); break;
+		case 3: getUnicolorExperimental(ledColors, image, true); break;
 		default: getMulticolorForLeds(ledColors, image);
 	}
 
@@ -257,3 +262,251 @@ float3 ImageColorAveraging::calcUnicolorForLeds(const Image<ColorRgb>& image) co
 	return averageLinear;
 }
 
+
+void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors, const Image<ColorRgb>& image, bool adaptive)
+{
+    // Custom v3: temporally stable multi-modal hue selection.
+    // Dominant uses a brightness/position-weighted circular hue histogram,
+    // and adds a small amount of a genuine, distinct second color family.
+    // This is deliberately not object segmentation or motion tracking.
+    // Adaptive Accent keeps its original scoring behavior.
+    constexpr int kBins = 24;
+    struct Cluster {
+        double pixels = 0.0;
+        double centralWeight = 0.0;
+        double borderPixels = 0.0;
+        double red = 0.0, green = 0.0, blue = 0.0;
+        double weightedVotes = 0.0;
+        double weightedRed = 0.0, weightedGreen = 0.0, weightedBlue = 0.0;
+    };
+    std::array<Cluster, kBins> clusters{};
+    std::array<double, kBins> backgroundVotes{};
+    const uint8_t* pixels = image.rawMem();
+    const unsigned width = image.width();
+    const unsigned height = image.height();
+    const unsigned x0 = std::min(_verticalBorder, width);
+    const unsigned y0 = std::min(_horizontalBorder, height);
+    const unsigned x1 = (width > _verticalBorder) ? width - _verticalBorder : width;
+    const unsigned y1 = (height > _horizontalBorder) ? height - _horizontalBorder : height;
+
+    if (x0 >= x1 || y0 >= y1) {
+        ledColors.assign(_colorsMap.size(), calcUnicolorForLeds(image));
+        return;
+    }
+
+    const double scaleX = 1.0 / std::max(1u, x1 - x0);
+    const double scaleY = 1.0 / std::max(1u, y1 - y0);
+    double samples = 0.0;
+    for (unsigned y = y0; y < y1; y += 4) {
+        for (unsigned x = x0; x < x1; x += 4) {
+            const size_t off = (static_cast<size_t>(y) * width + x) * 3;
+            const int r = pixels[off], g = pixels[off + 1], b = pixels[off + 2];
+            const int maximum = std::max({r, g, b});
+            const int minimum = std::min({r, g, b});
+            const int delta = maximum - minimum;
+            samples += 1.0;
+            if (maximum == 0) continue;
+            const double saturation = static_cast<double>(delta) / maximum;
+            // Keep adaptive's old thresholds; dominant should also see bright,
+            // moderately saturated beige/yellow instead of only dark vivid blues.
+            if (adaptive) {
+                if (maximum < 36 || delta < 28 || saturation < 0.20) continue;
+            } else if (maximum < 32 || delta < 16 || saturation < 0.12) {
+                continue;
+            }
+
+            double hue;
+            if (maximum == r) hue = 60.0 * (g - b) / delta;
+            else if (maximum == g) hue = 60.0 * ((b - r) / static_cast<double>(delta) + 2.0);
+            else hue = 60.0 * ((r - g) / static_cast<double>(delta) + 4.0);
+            if (hue < 0.0) hue += 360.0;
+            const int bin = std::clamp(static_cast<int>(hue * kBins / 360.0), 0, kBins - 1);
+            const double nx = ((static_cast<double>(x - x0) + 0.5) * scaleX - 0.5) * 2.0;
+            const double ny = ((static_cast<double>(y - y0) + 0.5) * scaleY - 0.5) * 2.0;
+            const bool atBorder = std::abs(nx) > 0.70 || std::abs(ny) > 0.70;
+            const double centerGaussian = std::exp(-3.5 * (nx * nx + ny * ny));
+            const double centralWeight = 1.0 + 4.0 * centerGaussian;
+
+            auto& c = clusters[bin];
+            c.pixels += 1.0;
+            c.centralWeight += centralWeight;
+            c.borderPixels += atBorder ? 1.0 : 0.0;
+            c.red += r; c.green += g; c.blue += b;
+            if (atBorder) backgroundVotes[bin] += 1.0;
+            if (!adaptive) {
+                const double brightness = std::sqrt(static_cast<double>(maximum) / 255.0);
+                const double colorfulness = 0.55 + 0.45 * std::sqrt(saturation);
+                // Mild center preference; this is not the center-biased Adaptive mode.
+                const double position = 0.85 + 0.45 * centerGaussian;
+                const double weight = brightness * colorfulness * position;
+                c.weightedVotes += weight;
+                c.weightedRed += r * weight;
+                c.weightedGreen += g * weight;
+                c.weightedBlue += b * weight;
+            }
+        }
+    }
+
+    double chromatic = 0.0;
+    for (const auto& c : clusters) chromatic += c.pixels;
+    if (chromatic < 6.0 || chromatic / std::max(1.0, samples) < 0.10) {
+        _lastHueBin = -1;
+        _pendingHueBin = -1;
+        _pendingHueFrames = 0;
+        _dominantScores.fill(0.0);
+        _lastDominantMs = 0;
+        ledColors.assign(_colorsMap.size(), calcUnicolorForLeds(image));
+        return;
+    }
+
+    int background = 0;
+    for (int i = 1; i < kBins; ++i)
+        if (backgroundVotes[i] > backgroundVotes[background]) background = i;
+
+    std::array<double, kBins> scores{};
+    for (int i = 0; i < kBins; ++i) {
+        const auto& c = clusters[i];
+        if (c.pixels == 0.0) continue;
+        if (adaptive) {
+            const int d = std::abs(i - background);
+            const double hueContrast = std::min(d, kBins - d) / 12.0;
+            const double edgeShare = c.borderPixels / c.pixels;
+            scores[i] = c.centralWeight * (1.0 + 1.8 * hueContrast) * (1.0 - 0.40 * edgeShare);
+            if (c.pixels < 0.055 * chromatic) scores[i] *= 0.10;
+        } else {
+            // Circular hue density: a family cannot split at 0/360 or bin edges.
+            const auto vote = [&](int offset) {
+                return clusters[(i + kBins + offset) % kBins].weightedVotes;
+            };
+            scores[i] = vote(0) + 0.60 * (vote(-1) + vote(1)) +
+                        0.20 * (vote(-2) + vote(2));
+        }
+    }
+
+    if (!adaptive) {
+        // EMA over the *candidate scores*, before winner selection.
+        // This removes rapid winner flips that LED smoothing cannot prevent.
+        const auto timePoint = std::chrono::steady_clock::now().time_since_epoch();
+        const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(timePoint).count();
+        double alpha = 1.0;
+        if (_lastDominantMs > 0 && nowMs >= _lastDominantMs) {
+            const double elapsed = std::clamp(static_cast<double>(nowMs - _lastDominantMs), 1.0, 2000.0);
+            alpha = 1.0 - std::exp(-elapsed / 140.0);
+        }
+        _lastDominantMs = nowMs;
+        for (int i = 0; i < kBins; ++i) {
+            _dominantScores[i] += alpha * (scores[i] - _dominantScores[i]);
+            // Don't hold a hue that disappeared completely from the current frame.
+            if (clusters[i].pixels == 0.0) _dominantScores[i] = 0.0;
+            scores[i] = _dominantScores[i];
+        }
+    } else {
+        _dominantScores.fill(0.0);
+        _lastDominantMs = 0;
+    }
+
+    int winner = 0;
+    for (int i = 1; i < kBins; ++i)
+        if (scores[i] > scores[winner]) winner = i;
+
+    const auto distanceBins = [&](int a, int b) {
+        const int d = std::abs(a - b);
+        return std::min(d, kBins - d);
+    };
+
+    if (_lastHueBin >= 0 && _lastHueBin != winner && clusters[_lastHueBin].pixels > 0.0) {
+        // Adjacent bin changes are the same broad color family, not a scene cut.
+        if (!adaptive && distanceBins(_lastHueBin, winner) <= 1) {
+            _pendingHueBin = -1;
+            _pendingHueFrames = 0;
+        } else {
+            const double margin = adaptive ? 1.22 : 1.15;
+            if (scores[winner] < scores[_lastHueBin] * margin) {
+                winner = _lastHueBin;
+                _pendingHueBin = -1;
+                _pendingHueFrames = 0;
+            } else {
+                if (_pendingHueBin != winner) {
+                    _pendingHueBin = winner;
+                    _pendingHueFrames = 1;
+                } else ++_pendingHueFrames;
+                const int requiredFrames = (!adaptive && scores[winner] > scores[_lastHueBin] * 1.90) ? 1 :
+                                           (adaptive ? 2 : 3);
+                if (_pendingHueFrames < requiredFrames) winner = _lastHueBin;
+            }
+        }
+    }
+    if (winner != _lastHueBin) {
+        _pendingHueBin = -1;
+        _pendingHueFrames = 0;
+    }
+    _lastHueBin = winner;
+
+    const auto& selected = clusters[winner];
+    if (selected.pixels == 0.0) {
+        ledColors.assign(_colorsMap.size(), calcUnicolorForLeds(image));
+        return;
+    }
+
+    double mixCount = adaptive ? selected.pixels : selected.weightedVotes;
+    double mixR = adaptive ? selected.red : selected.weightedRed;
+    double mixG = adaptive ? selected.green : selected.weightedGreen;
+    double mixB = adaptive ? selected.blue : selected.weightedBlue;
+    if (!adaptive) {
+        // Main family: blend neighboring bins with exactly the same weights as voting.
+        for (int d : {-2, -1, 1, 2}) {
+            const auto& neighbor = clusters[(winner + kBins + d) % kBins];
+            const double k = std::abs(d) == 1 ? 0.60 : 0.20;
+            mixCount += k * neighbor.weightedVotes;
+            mixR += k * neighbor.weightedRed;
+            mixG += k * neighbor.weightedGreen;
+            mixB += k * neighbor.weightedBlue;
+        }
+    }
+    double outR = mixR / std::max(1e-9, mixCount);
+    double outG = mixG / std::max(1e-9, mixCount);
+    double outB = mixB / std::max(1e-9, mixCount);
+
+    if (!adaptive) {
+        // Find a second *independent* family, not another peak of the same family.
+        int second = -1;
+        for (int i = 0; i < kBins; ++i) {
+            if (clusters[i].pixels == 0.0 || distanceBins(winner, i) < 4) continue;
+            if (second < 0 || scores[i] > scores[second]) second = i;
+        }
+        if (second >= 0 && scores[winner] > 0.0) {
+            const double ratio = std::clamp(scores[second] / scores[winner], 0.0, 1.0);
+            const double angularDistance = 15.0 * distanceBins(winner, second);
+            // Close color families can contribute ~18%. Opposite hues only ~4.5%
+            // so blue+orange does not turn into an unrelated grayish mixture.
+            const double distanceFactor = (angularDistance <= 75.0) ? 1.0 :
+                (angularDistance >= 120.0) ? 0.25 :
+                1.0 - 0.75 * (angularDistance - 75.0) / 45.0;
+            const double secondFraction = 0.18 *
+                std::clamp((ratio - 0.40) / 0.60, 0.0, 1.0) * distanceFactor;
+            if (secondFraction > 0.0) {
+                double secondCount = 0.0, secondR = 0.0, secondG = 0.0, secondB = 0.0;
+                for (int d = -2; d <= 2; ++d) {
+                    const auto& c = clusters[(second + kBins + d) % kBins];
+                    const double k = (d == 0) ? 1.0 : (std::abs(d) == 1 ? 0.60 : 0.20);
+                    secondCount += k * c.weightedVotes;
+                    secondR += k * c.weightedRed;
+                    secondG += k * c.weightedGreen;
+                    secondB += k * c.weightedBlue;
+                }
+                if (secondCount > 0.0) {
+                    outR = (1.0 - secondFraction) * outR + secondFraction * (secondR / secondCount);
+                    outG = (1.0 - secondFraction) * outG + secondFraction * (secondG / secondCount);
+                    outB = (1.0 - secondFraction) * outB + secondFraction * (secondB / secondCount);
+                }
+            }
+        }
+    }
+
+    const uint8_t r = static_cast<uint8_t>(std::clamp(outR, 0.0, 255.0));
+    const uint8_t g = static_cast<uint8_t>(std::clamp(outG, 0.0, 255.0));
+    const uint8_t b = static_cast<uint8_t>(std::clamp(outB, 0.0, 255.0));
+    const auto linear16 = InfiniteProcessing::srgbNonlinearToLinear(byte3(r, g, b));
+    const float3 result = static_cast<float3>(linear16) / 65535.0f;
+    ledColors.assign(_colorsMap.size(), result);
+}

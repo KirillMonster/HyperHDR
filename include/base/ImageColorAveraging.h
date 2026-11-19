@@ -9,6 +9,7 @@
 	#include <map>
 #endif
 
+#include <array>
 #include <image/Image.h>
 #include <utils/Logger.h>
 #include <base/LedString.h>
@@ -42,6 +43,7 @@ namespace hyperhdr
 	private:
 		void getUnicolorForLeds(std::vector<linalg::aliases::float3>& ledColors, const Image<ColorRgb>& image) const;
 		void getMulticolorForLeds(std::vector<linalg::aliases::float3>& ledColors, const Image<ColorRgb>& image) const;
+		void getUnicolorExperimental(std::vector<linalg::aliases::float3>& ledColors, const Image<ColorRgb>& image, bool adaptive);
 
 		const unsigned _width;
 		const unsigned _height;
@@ -49,6 +51,11 @@ namespace hyperhdr
 		const unsigned _horizontalBorder;
 		const unsigned _verticalBorder;
 		int _mappingType;
+		int _lastHueBin = -1;
+		int _pendingHueBin = -1;
+		int _pendingHueFrames = 0;
+		std::array<double, 24> _dominantScores{};
+		long long _lastDominantMs = 0;
 
 		std::vector<std::vector<uint32_t>> _colorsMap;
 		std::map<int, std::vector<uint32_t>> _colorGroups;

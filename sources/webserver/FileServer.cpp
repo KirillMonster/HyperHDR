@@ -31,7 +31,6 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QList>
-#include <QMimeDatabase>
 #include <QPair>
 #include <QResource>
 #include <QSslCertificate>
@@ -94,7 +93,16 @@ FileServer::FileServer():
 	_mimeDb["svg"] = "image/svg+xml";
 	_mimeDb["jpg"] = "image/jpeg";
 	_mimeDb["jpeg"] = "image/jpeg";
-	_mimeDb["woff2"] = "font/woff2";	
+	_mimeDb["woff2"] = "font/woff2";
+	_mimeDb["ico"] = "image/x-icon";
+	_mimeDb["webp"] = "image/webp";
+	_mimeDb["gif"] = "image/gif";
+	_mimeDb["xml"] = "application/xml";
+	_mimeDb["txt"] = "text/plain";
+	_mimeDb["wasm"] = "application/wasm";
+	_mimeDb["map"] = "application/json";
+	_mimeDb["ttf"] = "font/ttf";
+	_mimeDb["otf"] = "font/otf";
 }
 
 FileServer::~FileServer()
@@ -137,7 +145,7 @@ QString FileServer::getMimeName(QString filename)
 	QString extension = QFileInfo(filename).suffix();
 
 	if (extension.isEmpty() || !_mimeDb.contains(extension))
-		return QMimeDatabase().mimeTypeForFile(filename).name();
+		return QStringLiteral("application/octet-stream");
 		
 	return _mimeDb[extension];
 }

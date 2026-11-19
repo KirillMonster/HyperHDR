@@ -61,7 +61,7 @@ namespace
 	constexpr auto SMOOTHING_USER_CONFIG = 0;
 	constexpr int64_t  DEFAUL_SETTLINGTIME = 200;   // settlingtime in ms
 	constexpr double   DEFAUL_UPDATEFREQUENCY = 25;    // updatefrequncy in hz
-	constexpr double   MINIMAL_UPDATEFREQUENCY = 20;
+	constexpr double   MINIMAL_UPDATEFREQUENCY = 10;
 }
 
 InfiniteSmoothing::InfiniteSmoothing(const QJsonDocument& config, HyperHdrInstance* hyperhdr)

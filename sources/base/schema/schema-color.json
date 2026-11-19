@@ -9,9 +9,9 @@
 			"type" : "string",
 			"required" : true,
 			"title" : "edt_conf_color_imageToLedMappingType_title",
-			"enum" : ["advanced", "unicolor_mean"],
+			"enum" : ["advanced", "unicolor_mean", "unicolor_dominant", "unicolor_adaptive"],
 			"options" : {
-				"enum_titles" : ["edt_conf_enum_multicolor_advanced", "edt_conf_enum_unicolor_mean"]
+				"enum_titles" : ["edt_conf_enum_multicolor_advanced", "edt_conf_enum_unicolor_mean", "edt_conf_enum_unicolor_dominant", "edt_conf_enum_unicolor_adaptive"]
 			},
 			"default"  : "advanced",
 			"propertyOrder" : 1

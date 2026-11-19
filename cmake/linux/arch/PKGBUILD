@@ -1,6 +1,6 @@
 pkgname=HyperHDR
 pkgver={VERSION}
-pkgrel=1
+pkgrel=3
 pkgdesc="HyperHDR is an open source ambient light implementation."
 url="https://github.com/awawa-dev/HyperHDR"
 license=('MIT')
@@ -22,7 +22,7 @@ build() {
         -DCMAKE_BUILD_TYPE='None' \
         -DCMAKE_INSTALL_PREFIX='/usr' \
         -Wno-dev {BUILD_OPTION}
-    cmake --build build
+    cmake --build build --parallel 12
     mkdir -p build/lib/hyperhdr
     cp -P build/lib/*.so* build/lib/hyperhdr/ 2>/dev/null || true
 }

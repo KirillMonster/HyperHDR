@@ -60,6 +60,10 @@ int ImageToLedManager::mappingTypeToInt(const QString& mappingType)
 {
 	if (mappingType == "unicolor_mean")
 		return 1;
+	if (mappingType == "unicolor_dominant")
+		return 2;
+	if (mappingType == "unicolor_adaptive")
+		return 3;
 
 	return 0;
 }
@@ -69,6 +73,10 @@ QString ImageToLedManager::mappingTypeToStr(int mappingType)
 
 	if (mappingType == 1)
 		return "unicolor_mean";
+	if (mappingType == 2)
+		return "unicolor_dominant";
+	if (mappingType == 3)
+		return "unicolor_adaptive";
 
 	return "advanced";
 }

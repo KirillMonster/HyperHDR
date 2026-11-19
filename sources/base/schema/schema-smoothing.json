@@ -43,7 +43,7 @@
 			"format": "stepper",			
 			"step" : 5,			
 			"title" : "edt_conf_smooth_updateFrequency_title",
-			"minimum" : 20.0,
+			"minimum" : 10.0,
 			"maximum" : 200.0,
 			"default" : 50,
 			"append" : "edt_append_hz",
