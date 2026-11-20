@@ -297,6 +297,8 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
     const double scaleX = 1.0 / std::max(1u, x1 - x0);
     const double scaleY = 1.0 / std::max(1u, y1 - y0);
     double samples = 0.0;
+    double sumPeak = 0.0;
+    double brightSamples = 0.0;
     for (unsigned y = y0; y < y1; y += 4) {
         for (unsigned x = x0; x < x1; x += 4) {
             const size_t off = (static_cast<size_t>(y) * width + x) * 3;
@@ -305,6 +307,8 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
             const int minimum = std::min({r, g, b});
             const int delta = maximum - minimum;
             samples += 1.0;
+            sumPeak += maximum;
+            if (maximum >= 20) brightSamples += 1.0;
             if (maximum == 0) continue;
             const double saturation = static_cast<double>(delta) / maximum;
             // Keep adaptive's old thresholds; dominant should also see bright,
@@ -365,13 +369,50 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
 
     double chromatic = 0.0;
     for (const auto& c : clusters) chromatic += c.pixels;
-    if (chromatic < 6.0 || chromatic / std::max(1.0, samples) < 0.10) {
+
+    const auto resetHueHistory = [&] {
         _lastHueBin = -1;
         _pendingHueBin = -1;
         _pendingHueFrames = 0;
         _dominantScores.fill(0.0);
         _lastDominantMs = 0;
-        ledColors.assign(_colorsMap.size(), calcUnicolorForLeds(image));
+    };
+
+    if (!adaptive) {
+        // Darkness is a scene state, not a hue. Stable transitions avoid
+        // repeated brightness=0 / brightness=255 calls to Home Assistant
+        // when a cursor or playback overlay appears on a black frame.
+        const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+        const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+        const auto decision = _dominantDarkGate.update(
+            sumPeak / std::max(1.0, samples),
+            brightSamples / std::max(1.0, samples), nowMs);
+
+        if (decision == DominantDarkSceneGate::Decision::Dark) {
+            resetHueHistory();
+            _lastDominantOutput = float3{0.f, 0.f, 0.f};
+            _hasLastDominantOutput = true;
+            ledColors.assign(_colorsMap.size(), _lastDominantOutput);
+            return;
+        }
+        if (decision == DominantDarkSceneGate::Decision::HoldPrevious) {
+            const float3 held = _hasLastDominantOutput ?
+                _lastDominantOutput : float3{0.f, 0.f, 0.f};
+            ledColors.assign(_colorsMap.size(), held);
+            return;
+        }
+        if (decision == DominantDarkSceneGate::Decision::Resumed)
+            resetHueHistory();
+    }
+
+    if (chromatic < 6.0 || chromatic / std::max(1.0, samples) < 0.10) {
+        resetHueHistory();
+        const float3 average = calcUnicolorForLeds(image);
+        if (!adaptive) {
+            _lastDominantOutput = average;
+            _hasLastDominantOutput = true;
+        }
+        ledColors.assign(_colorsMap.size(), average);
         return;
     }
 
@@ -439,7 +480,12 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
         if (winner < 0 || scores[i] > scores[winner]) winner = i;
     }
     if (winner < 0) {
-        ledColors.assign(_colorsMap.size(), calcUnicolorForLeds(image));
+        const float3 average = calcUnicolorForLeds(image);
+        if (!adaptive) {
+            _lastDominantOutput = average;
+            _hasLastDominantOutput = true;
+        }
+        ledColors.assign(_colorsMap.size(), average);
         return;
     }
 
@@ -478,7 +524,12 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
 
     const auto& selected = clusters[winner];
     if (selected.pixels == 0.0) {
-        ledColors.assign(_colorsMap.size(), calcUnicolorForLeds(image));
+        const float3 average = calcUnicolorForLeds(image);
+        if (!adaptive) {
+            _lastDominantOutput = average;
+            _hasLastDominantOutput = true;
+        }
+        ledColors.assign(_colorsMap.size(), average);
         return;
     }
 
@@ -542,5 +593,9 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
     const uint8_t b = static_cast<uint8_t>(std::clamp(outB, 0.0, 255.0));
     const auto linear16 = InfiniteProcessing::srgbNonlinearToLinear(byte3(r, g, b));
     const float3 result = static_cast<float3>(linear16) / 65535.0f;
+    if (!adaptive) {
+        _lastDominantOutput = result;
+        _hasLastDominantOutput = true;
+    }
     ledColors.assign(_colorsMap.size(), result);
 }
