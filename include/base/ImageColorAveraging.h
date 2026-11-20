@@ -10,6 +10,7 @@
 #endif
 
 #include <array>
+#include <base/DominantDarkSceneGate.h>
 #include <image/Image.h>
 #include <utils/Logger.h>
 #include <base/LedString.h>
@@ -56,6 +57,9 @@ namespace hyperhdr
 		int _pendingHueFrames = 0;
 		std::array<double, 24> _dominantScores{};
 		long long _lastDominantMs = 0;
+		DominantDarkSceneGate _dominantDarkGate;
+		bool _hasLastDominantOutput = false;
+		linalg::aliases::float3 _lastDominantOutput{0.f, 0.f, 0.f};
 
 		std::vector<std::vector<uint32_t>> _colorsMap;
 		std::map<int, std::vector<uint32_t>> _colorGroups;
