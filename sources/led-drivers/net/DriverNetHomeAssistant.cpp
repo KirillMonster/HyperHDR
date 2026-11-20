@@ -123,6 +123,9 @@ int DriverNetHomeAssistant::writeFiniteColors(const std::vector<ColorRgb>& ledVa
 			QJsonObject row;
 			auto& color = *(rgb++);
 			int brightness = 0;
+			// Fixed-brightness mode must detect nonzero RGB, not rounded luminance:
+			// a dim saturated blue/red channel may otherwise falsely turn lights off.
+			const bool hasColor = (color.red != 0 || color.green != 0 || color.blue != 0);
 			
 			row["entity_id"] = lamp.name;
 
@@ -149,11 +152,11 @@ int DriverNetHomeAssistant::writeFiniteColors(const std::vector<ColorRgb>& ledVa
 			{
 				row["brightness"] = lamp.currentBrightness = brightness;
 			}
-			else if (lamp.currentBrightness <= 0 && brightness > 0)
+			else if (lamp.currentBrightness <= 0 && hasColor)
 			{
 				row["brightness"] = lamp.currentBrightness = _haInstance.constantBrightness;
 			}
-			else if (lamp.currentBrightness > 0 && brightness == 0)
+			else if (lamp.currentBrightness > 0 && !hasColor)
 			{
 				row["brightness"] = lamp.currentBrightness = 0;
 			}
