@@ -11,6 +11,7 @@
 
 #include <array>
 #include <base/DominantDarkSceneGate.h>
+#include <base/DeskAtmosphereGradient.h>
 #include <image/Image.h>
 #include <utils/Logger.h>
 #include <base/LedString.h>
@@ -45,6 +46,7 @@ namespace hyperhdr
 		void getUnicolorForLeds(std::vector<linalg::aliases::float3>& ledColors, const Image<ColorRgb>& image) const;
 		void getMulticolorForLeds(std::vector<linalg::aliases::float3>& ledColors, const Image<ColorRgb>& image) const;
 		void getUnicolorExperimental(std::vector<linalg::aliases::float3>& ledColors, const Image<ColorRgb>& image, bool adaptive);
+		void getDeskAtmosphereGradient(std::vector<linalg::aliases::float3>& ledColors, const Image<ColorRgb>& image);
 
 		const unsigned _width;
 		const unsigned _height;
@@ -58,6 +60,7 @@ namespace hyperhdr
 		std::array<double, 24> _dominantScores{};
 		long long _lastDominantMs = 0;
 		DominantDarkSceneGate _dominantDarkGate;
+		DeskAtmosphereGradient _deskGradient;
 		bool _hasLastDominantOutput = false;
 		linalg::aliases::float3 _lastDominantOutput{0.f, 0.f, 0.f};
 
