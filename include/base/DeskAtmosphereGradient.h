@@ -10,7 +10,7 @@
 
 namespace hyperhdr {
 
-// One full-screen capture -> 3 independent atmospheric palettes -> 178 LEDs.
+// One full-screen capture -> 3 atmospheric anchors + full-width soft gradient -> 178 LEDs.
 // Physical order (looking at the desk):
 //  0..32   left, rear -> front
 //  33..88  front, left -> right
@@ -35,6 +35,7 @@ public:
         if (cropWidth == 0 || cropHeight == 0) return {};
 
         std::array<ZoneFrame, 3> frames{};
+        std::array<Accum, kLocalBins> fullWidthLocal{};
         double framePeak = 0.0;
         double brightPixels = 0.0;
         double sampleCount = 0.0;
@@ -60,10 +61,13 @@ public:
                              (.55 + .45 * std::sqrt(saturation));
                 }
                 if (nx < .40) accumulate(frames[0], c, colored, hue, weight, ny);
-                if (nx >= .25 && nx < .75)
-                    accumulate(frames[1], c, colored, hue, weight,
-                               std::clamp((nx - .25) / .50, 0.0, 1.0));
+                if (nx >= .30 && nx < .70)
+                    accumulate(frames[1], c, colored, hue, weight, nx);
                 if (nx >= .60) accumulate(frames[2], c, colored, hue, weight, ny);
+                if (colored) {
+                    const int column = std::clamp(static_cast<int>(nx * kLocalBins), 0, kLocalBins - 1);
+                    fullWidthLocal[column].add(c, weight);
+                }
             }
         }
 
@@ -80,17 +84,43 @@ public:
         if (decision == DominantDarkSceneGate::Decision::Resumed) clearHistory();
 
         std::array<Rgb, 3> base{};
-        for (int z = 0; z < 3; ++z) base[z] = selectDominant(frames[z], _history[z], nowMs);
+        std::array<bool, 3> coloredZone{};
+        for (int z = 0; z < 3; ++z) {
+            coloredZone[z] = hasReliableHue(frames[z]);
+            base[z] = selectDominant(frames[z], _history[z], nowMs);
+        }
+
+        // Avoid a white 'hole' between saturated neighboring regions: a region
+        // with little chroma inherits the ambient palette of its neighbors.
+        const bool anyColor = coloredZone[0] || coloredZone[1] || coloredZone[2];
+        if (anyColor) {
+            if (!coloredZone[1]) {
+                if (coloredZone[0] && coloredZone[2]) base[1] = interpolateHue(base[0], base[2], .5);
+                else base[1] = coloredZone[0] ? base[0] : base[2];
+            }
+            if (!coloredZone[0]) base[0] = coloredZone[1] ? base[1] : base[2];
+            if (!coloredZone[2]) base[2] = coloredZone[1] ? base[1] : base[0];
+        } else {
+            // An actually monochrome picture may yield neutral room light,
+            // but not an eye-catching full-brightness white desk.
+            for (Rgb& c : base) c = capNeutralBrightness(c);
+        }
 
         Output out{};
         for (std::size_t i = 0; i < out.size(); ++i) {
-            int zone = 0;
-            double t = 0.0;
-            if (i < 33) { zone = 0; t = static_cast<double>(i) / 32.0; }
-            else if (i < 89) { zone = 1; t = static_cast<double>(i - 33) / 55.0; }
-            else if (i < 122) { zone = 2; t = static_cast<double>(121 - i) / 32.0; }
-            else { zone = 1; t = static_cast<double>(177 - i) / 55.0; }
-            out[i] = makeGradient(base[zone], frames[zone], t);
+            if (i < 33) {
+                const double t = static_cast<double>(i) / 32.0;
+                out[i] = makeGradient(base[0], frames[0].local, t);
+            } else if (i < 89) {
+                const double x = static_cast<double>(i - 33) / 55.0;
+                out[i] = makeGradient(horizontalBase(base, x), fullWidthLocal, x);
+            } else if (i < 122) {
+                const double t = static_cast<double>(121 - i) / 32.0;
+                out[i] = makeGradient(base[2], frames[2].local, t);
+            } else {
+                const double x = static_cast<double>(177 - i) / 55.0;
+                out[i] = makeGradient(horizontalBase(base, x), fullWidthLocal, x);
+            }
         }
         _previous = out;
         _hasPrevious = true;
@@ -157,9 +187,13 @@ private:
         };
         return {b(a.r / a.weight), b(a.g / a.weight), b(a.b / a.weight)};
     }
+    static bool hasReliableHue(const ZoneFrame& frame) noexcept {
+        return frame.pixels >= 1 && frame.chromatic >= 6 &&
+               frame.chromatic / frame.pixels >= .015;
+    }
     static Rgb selectDominant(const ZoneFrame& frame, History& history, std::int64_t nowMs)
     {
-        if (frame.pixels < 1 || frame.chromatic < 6 || frame.chromatic / frame.pixels < .08) {
+        if (!hasReliableHue(frame)) {
             history = {};
             return asRgb(frame.mean);
         }
@@ -243,7 +277,38 @@ private:
         };
         return {v(r),v(g),v(b)};
     }
-    static Rgb makeGradient(Rgb base, const ZoneFrame& frame, double t) noexcept {
+    static Rgb capNeutralBrightness(Rgb c) noexcept {
+        const int maximum = std::max({int(c.r), int(c.g), int(c.b)});
+        if (maximum <= 110) return c;
+        const double factor = 110.0 / maximum;
+        const auto scale = [factor](std::uint8_t v) {
+            return static_cast<std::uint8_t>(std::lround(v * factor));
+        };
+        return {scale(c.r), scale(c.g), scale(c.b)};
+    }
+    static double smoothstep(double t) noexcept {
+        t = std::clamp(t, 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+    static Rgb interpolateHue(Rgb a, Rgb b, double t) noexcept {
+        t = smoothstep(t);
+        Hsv c1 = rgbToHsv(a), c2 = rgbToHsv(b);
+        if (c1.s < .12 && c2.s >= .12) c1.h = c2.h;
+        if (c2.s < .12 && c1.s >= .12) c2.h = c1.h;
+        const double delta = std::fmod(c2.h - c1.h + 540.0, 360.0) - 180.0;
+        return hsvToRgb({c1.h + delta * t,
+                         c1.s + (c2.s - c1.s) * t,
+                         c1.v + (c2.v - c1.v) * t});
+    }
+    static Rgb horizontalBase(const std::array<Rgb, 3>& base, double x) noexcept {
+        // Anchor colors at 1/6, 1/2 and 5/6 of the *whole* screen.
+        // Front/rear strips now span L -> C -> R instead of the middle 50%.
+        if (x <= 1.0/6.0) return base[0];
+        if (x < .5) return interpolateHue(base[0], base[1], (x - 1.0/6.0) * 3.0);
+        if (x < 5.0/6.0) return interpolateHue(base[1], base[2], (x - .5) * 3.0);
+        return base[2];
+    }
+    static Rgb makeGradient(Rgb base, const std::array<Accum, kLocalBins>& buckets, double t) noexcept {
         if (base.r == 0 && base.g == 0 && base.b == 0) return base;
         const int center = std::clamp(static_cast<int>(std::lround(t * (kLocalBins - 1))), 0, kLocalBins - 1);
         Accum local{};
@@ -251,7 +316,7 @@ private:
         for (int d = -3; d <= 3; ++d) {
             const int idx = center + d;
             if (idx < 0 || idx >= kLocalBins) continue;
-            const auto& a = frame.local[idx];
+            const auto& a = buckets[idx];
             const double k = 4.0 - std::abs(d);
             local.weight += k * a.weight;
             local.r += k * a.r;
