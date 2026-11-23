@@ -1,4 +1,5 @@
 {
+  "edt_conf_enum_desk_atmosphere_gradient": "Desk Atmosphere: soft 3-zone gradient",
   "edt_conf_enum_unicolor_dominant": "Uni Color: dominant hue (experimental)",
   "edt_conf_enum_unicolor_adaptive": "Uni Color: center / background-aware accent (experimental)",
   "remote_maptype_label_unicolor_dominant": "Dominant",
