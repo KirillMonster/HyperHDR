@@ -188,10 +188,11 @@ void ImageColorAveraging::process(std::vector<float3>& ledColors, const Image<Co
 		case 1: getUnicolorForLeds(ledColors, image); break;
 		case 2: getUnicolorExperimental(ledColors, image, false); break;
 		case 3: getUnicolorExperimental(ledColors, image, true); break;
+		case 4: getDeskAtmosphereGradient(ledColors, image); break;
 		default: getMulticolorForLeds(ledColors, image);
 	}
 
-	if (!_colorGroups.empty() && _mappingType != 1)
+	if (!_colorGroups.empty() && _mappingType != 1 && _mappingType != 4)
 	{
 		for (auto& group : _colorGroups)
 		{
@@ -598,4 +599,30 @@ void ImageColorAveraging::getUnicolorExperimental(std::vector<float3>& ledColors
         _hasLastDominantOutput = true;
     }
     ledColors.assign(_colorsMap.size(), result);
+}
+
+
+void ImageColorAveraging::getDeskAtmosphereGradient(std::vector<float3>& ledColors, const Image<ColorRgb>& image)
+{
+    if (_colorsMap.size() != DeskAtmosphereGradient::kLedCount) {
+        // Desk preset requires 178 physical LEDs in its established wiring order.
+        // Fall back to per-LED mapping for other layouts instead of dropping output.
+        getMulticolorForLeds(ledColors, image);
+        return;
+    }
+
+    const auto timePoint = std::chrono::steady_clock::now().time_since_epoch();
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(timePoint).count();
+    const unsigned cropX = std::min(_verticalBorder, image.width());
+    const unsigned cropY = std::min(_horizontalBorder, image.height());
+    const unsigned cropW = image.width() > 2 * cropX ? image.width() - 2 * cropX : image.width();
+    const unsigned cropH = image.height() > 2 * cropY ? image.height() - 2 * cropY : image.height();
+    const auto colors = _deskGradient.render(image.rawMem(), image.width(), image.height(),
+                                             cropX, cropY, cropW, cropH, nowMs);
+
+    ledColors.reserve(colors.size());
+    for (const auto& c : colors) {
+        const auto linear16 = InfiniteProcessing::srgbNonlinearToLinear(byte3(c.r, c.g, c.b));
+        ledColors.push_back(static_cast<float3>(linear16) / 65535.0f);
+    }
 }
