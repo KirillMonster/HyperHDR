@@ -64,6 +64,8 @@ int ImageToLedManager::mappingTypeToInt(const QString& mappingType)
 		return 2;
 	if (mappingType == "unicolor_adaptive")
 		return 3;
+	if (mappingType == "desk_atmosphere_gradient")
+		return 4;
 
 	return 0;
 }
@@ -77,6 +79,8 @@ QString ImageToLedManager::mappingTypeToStr(int mappingType)
 		return "unicolor_dominant";
 	if (mappingType == 3)
 		return "unicolor_adaptive";
+	if (mappingType == 4)
+		return "desk_atmosphere_gradient";
 
 	return "advanced";
 }
