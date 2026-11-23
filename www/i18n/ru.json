@@ -1,4 +1,5 @@
 {
+  "edt_conf_enum_desk_atmosphere_gradient": "Атмосфера стола: мягкий градиент трёх зон",
   "edt_conf_enum_unicolor_dominant": "Одноцветный: доминирующий оттенок (экспериментальный)",
   "edt_conf_enum_unicolor_adaptive": "Одноцветный: цветовой акцент с учётом фона и центра (экспериментальный)",
   "remote_maptype_label_unicolor_dominant": "Доминантный",
